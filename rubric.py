@@ -21,7 +21,7 @@ WEIGHTS = {
 
 def category_from_score(score: float) -> str:
     if score < 2.0:
-        return "Poor"
+        return "Weak"
     if score < 3.0:
         return "Average"
     if score < 4.0:
