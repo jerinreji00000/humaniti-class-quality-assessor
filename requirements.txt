@@ -2,4 +2,4 @@ streamlit>=1.38,<2.0
 faster-whisper>=1.0.3,<2.0
 numpy>=1.26,<3.0
 requests>=2.31,<3.0
-av>=11.0.0
+av==18.1.0
