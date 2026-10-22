@@ -179,3 +179,17 @@ st.caption(
     "Prototype limitations: this version does not claim to fully understand classroom video, "
     "student emotions, or engagement from transcript alone. Review its evidence before using the rating."
 )
+
+with st.expander("Debug: models available to my key"):
+    if st.button("List models"):
+        import requests
+        r = requests.get(
+            st.secrets["LLM_BASE_URL"].rstrip("/") + "/models",
+            headers={"Authorization": f"Bearer {st.secrets['LLM_API_KEY']}"},
+            timeout=30,
+        )
+        st.write(r.status_code)
+        try:
+            st.write([m["id"] for m in r.json().get("data", [])])
+        except Exception:
+            st.code(r.text[:1000])
