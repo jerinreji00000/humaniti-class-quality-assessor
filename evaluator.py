@@ -58,7 +58,7 @@ def _call_llm(system_prompt: str, user_prompt: str, model: str) -> str:
                         {"role": "user", "content": user_prompt},
                     ],
                     "temperature": 0.2,
-                    "max_tokens": 3000,
+                    "max_tokens": 2000,
                     "response_format": {"type": "json_object"},
                     **({"reasoning_effort": "low"} if "gpt-oss" in model else {}),
                 },
@@ -254,7 +254,7 @@ STRICT RULES:
     user_prompt = (
         f"Recording duration: {duration_seconds:.1f} seconds\n\n"
         f"Basic audio indicators:\n{json.dumps(audio_metrics, ensure_ascii=False)}\n\n"
-        f"Timestamped transcript:\n{transcript[:24000]}\n\n"
+        f"Timestamped transcript:\n{transcript[:12000]}\n\n"
         "Assess this class now. Cite transcript timestamps only when they are present in the transcript."
         "\n\nSTRICT REQUIREMENT: Return ONLY a JSON object containing "
         "'dimension_scores' with these exact five keys: "
