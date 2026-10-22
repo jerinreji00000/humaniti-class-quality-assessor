@@ -1,6 +1,12 @@
+"""Class assessment with JSON validation.
 
+Uses a hosted OpenAI-compatible API (e.g. Groq, OpenRouter) when LLM_API_KEY
+is configured in Streamlit secrets or environment variables. Otherwise it
+falls back to a local Ollama server.
+"""
 
 import json
+import os
 import re
 import requests
 
@@ -8,7 +14,7 @@ from rubric import DIMENSIONS, WEIGHTS, weighted_score
 
 
 class OllamaUnavailable(RuntimeError):
-    pass
+    """Raised when the LLM backend (hosted or local) cannot be used."""
 
 
 class ModelResponseError(RuntimeError):
@@ -18,9 +24,106 @@ class ModelResponseError(RuntimeError):
 OLLAMA_URL = "http://localhost:11434/api/chat"
 
 
+def _get_setting(name: str, default: str = "") -> str:
+    """Read a setting from Streamlit secrets first, then environment variables."""
+    try:
+        import streamlit as st
+
+        value = st.secrets.get(name)
+        if value:
+            return str(value)
+    except Exception:
+        pass
+    return os.environ.get(name, default)
+
+
+def _call_llm(system_prompt: str, user_prompt: str, model: str) -> str:
+    """Send the prompts to the hosted API or local Ollama and return raw text."""
+    api_key = _get_setting("LLM_API_KEY")
+    base_url = _get_setting("LLM_BASE_URL").rstrip("/")
+
+    # ---- Hosted OpenAI-compatible API ----
+    if api_key and base_url:
+        try:
+            response = requests.post(
+                f"{base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "temperature": 0.2,
+                    "max_tokens": 1500,
+                    "response_format": {"type": "json_object"},
+                },
+                timeout=300,
+            )
+        except requests.RequestException as exc:
+            raise OllamaUnavailable(
+                f"Could not connect to the hosted LLM at {base_url}. "
+                "Check LLM_BASE_URL in Secrets and your internet connection."
+            ) from exc
+
+        if response.status_code != 200:
+            raise OllamaUnavailable(
+                f"Hosted LLM returned HTTP {response.status_code}. "
+                f"Check LLM_API_KEY and that model '{model}' exists. "
+                f"Details: {response.text[:800]}"
+            )
+
+        try:
+            return response.json()["choices"][0]["message"]["content"]
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            raise ModelResponseError("Unexpected response from hosted LLM.") from exc
+
+    # ---- Local Ollama ----
+    try:
+        response = requests.post(
+            OLLAMA_URL,
+            json={
+                "model": model,
+                "stream": False,
+                "format": "json",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "options": {
+                    "temperature": 0.2,
+                    "num_ctx": 4096,
+                    "num_predict": 1200,
+                    "repeat_penalty": 1.15,
+                },
+            },
+            timeout=600,
+        )
+    except requests.RequestException as exc:
+        raise OllamaUnavailable(
+            "No hosted LLM is configured (LLM_API_KEY / LLM_BASE_URL missing) and "
+            "Ollama could not be reached at http://localhost:11434. "
+            "On Streamlit Cloud, add LLM_BASE_URL, LLM_API_KEY and LLM_MODEL in Secrets. "
+            "On your PC, install/start Ollama and download the selected model."
+        ) from exc
+
+    if response.status_code != 200:
+        raise OllamaUnavailable(
+            f"Ollama returned HTTP {response.status_code}. "
+            f"Make sure model '{model}' is downloaded. Details: {response.text[:800]}"
+        )
+
+    try:
+        return response.json()["message"]["content"]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ModelResponseError("Unexpected response from Ollama.") from exc
+
 
 def _extract_json(text: str) -> dict:
-    """Extract a valid JSON object from an Ollama response."""
+    """Extract a valid JSON object from a model response."""
     text = text.strip()
 
     # Remove Markdown code fences.
@@ -39,8 +142,7 @@ def _extract_json(text: str) -> dict:
     start = text.find("{")
     if start == -1:
         raise ModelResponseError(
-            f"No JSON object found in model response. "
-            f"Raw response: {text[:1500]}"
+            f"No JSON object found in model response. Raw response: {text[:1500]}"
         )
 
     depth = 0
@@ -75,8 +177,7 @@ def _extract_json(text: str) -> dict:
                         break
 
     raise ModelResponseError(
-        f"The model returned malformed or incomplete JSON. "
-        f"Raw response: {text[:2000]}"
+        f"The model returned malformed or incomplete JSON. Raw response: {text[:2000]}"
     )
 
 
@@ -84,7 +185,7 @@ def assess_class(transcript: str, audio_metrics: dict, model: str, duration_seco
     rubric_text = "\n".join(
         f"- {name}: weight {weight:.0%}" for name, weight in WEIGHTS.items()
     )
-    
+
     system_prompt = f"""
 You evaluate the quality of recorded online classes for children.
 
@@ -149,7 +250,6 @@ STRICT RULES:
 - Return one complete, syntactically valid JSON object.
 """
 
-
     user_prompt = (
         f"Recording duration: {duration_seconds:.1f} seconds\n\n"
         f"Basic audio indicators:\n{json.dumps(audio_metrics, ensure_ascii=False)}\n\n"
@@ -166,61 +266,13 @@ STRICT RULES:
         "Do not return an overall review or alternative categories."
     )
 
-    try:
-        response = requests.post(
-            OLLAMA_URL,
-            json={
-                "model": model,
-                "stream": False,
-                "format": "json",
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "format": "json",
-                "options": {
-                    "temperature": 0.2,
-                    "num_ctx": 4096,
-                    "num_predict": 1200,
-                    "repeat_penalty": 1.15,
-                },
+    raw = _call_llm(system_prompt, user_prompt, model)
 
-            },
-            timeout=600,
-        )
-    except requests.RequestException as exc:
-        raise OllamaUnavailable(
-            "Could not connect to Ollama at http://localhost:11434. "
-            "Install/start Ollama and download the selected model."
-        ) from exc
-
-    if response.status_code != 200:
-        detail = response.text[:800]
-        raise OllamaUnavailable(
-            f"Ollama returned HTTP {response.status_code}. "
-            f"Make sure model '{model}' is downloaded. Details: {detail}"
-        )
-
-    try:
-        raw = response.json()["message"]["content"]
-        print("OLLAMA RAW RESPONSE:", repr(raw[:3000]), flush=True)
-        print(
-            "OLLAMA DONE REASON:",
-            response.json().get("done_reason"),
-            flush=True,
-        )
-    except (ValueError, KeyError, TypeError) as exc:
-        raise ModelResponseError("Unexpected response from Ollama.") from exc
-
-    
     result = _extract_json(raw)
-    
     scores = result.get("dimension_scores", {})
 
     # Some models return a list instead of the required dictionary.
-    
     if isinstance(scores, list):
-        # The model omitted dimension names, so map scores by rubric order.
         dimension_names = list(DIMENSIONS)
 
         if len(scores) != len(dimension_names):
@@ -230,7 +282,6 @@ STRICT RULES:
             )
 
         converted = {}
-
         for name, item in zip(dimension_names, scores):
             if not isinstance(item, dict):
                 continue
@@ -251,32 +302,15 @@ STRICT RULES:
 
     elif not isinstance(scores, dict):
         raise ModelResponseError(
-            "Ollama returned an unsupported dimension_scores format. "
+            "The model returned an unsupported dimension_scores format. "
             f"Received type: {type(scores).__name__}"
         )
-
-    # Validate that at least one recognized dimension was returned.
-    if not any(
-        isinstance(scores.get(dim), dict)
-        and isinstance(scores[dim].get("score"), (int, float))
-        and 1 <= scores[dim]["score"] <= 5
-        for dim in DIMENSIONS
-    ):
-        raise ModelResponseError(
-                "Ollama returned no valid dimension scores. "
-                f"Received dimensions: {list(scores.keys())}"
-        )   
-
-        result["dimension_scores"] = scores
 
     # Match dimension names even if the model uses spaces or different casing.
     def normalize_key(value):
         return re.sub(r"[^a-z0-9]", "", str(value).lower())
 
-    score_lookup = {
-        normalize_key(key): value
-        for key, value in scores.items()
-    }
+    score_lookup = {normalize_key(key): value for key, value in scores.items()}
 
     normalized = {}
     valid_score_count = 0
@@ -310,17 +344,14 @@ STRICT RULES:
         normalized[dim] = {
             "score": score,
             "reason": str(item.get("reason", "No reason returned.")),
-            "evidence_status": str(
-                item.get("evidence_status", "limited")
-            ),
+            "evidence_status": str(item.get("evidence_status", "limited")),
         }
 
     if valid_score_count == 0:
-        returned_keys = list(scores.keys())
         raise ModelResponseError(
-            "Ollama returned no valid dimension scores. "
+            "The model returned no valid dimension scores. "
             f"Expected dimensions: {list(DIMENSIONS)}. "
-            f"Received dimensions: {returned_keys}. "
+            f"Received dimensions: {list(scores.keys())}. "
             f"Raw response: {raw[:1500]}"
         )
 
@@ -351,5 +382,3 @@ def _normalize_evidence(value):
                 "source": str(item.get("source", "transcript")),
             })
     return output
-
-
