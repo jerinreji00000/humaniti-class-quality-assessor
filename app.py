@@ -46,10 +46,15 @@ with col1:
         help="Use tiny first on an 8 GB RAM laptop. Larger models are slower and use more memory."
     )
 with col2:
+        try:
+        default_model = st.secrets.get("LLM_MODEL", "qwen2.5:3b")
+    except Exception:
+        default_model = "qwen2.5:3b"
+
     ollama_model = st.text_input(
-        "Ollama model name",
-        value="qwen2.5:3b",
-        help="Download this model once using: ollama pull qwen2.5:3b"
+        "Model name",
+        value=default_model,
+        help="Locally: run `ollama pull qwen2.5:3b`. On the cloud: use the hosted model name from your secrets."
     )
 
 st.caption("Prerequisites: install FFmpeg and Ollama, then download the Ollama model. See README.md.")
