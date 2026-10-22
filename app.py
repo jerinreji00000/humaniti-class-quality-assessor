@@ -46,7 +46,7 @@ with col1:
         help="Use tiny first on an 8 GB RAM laptop. Larger models are slower and use more memory."
     )
 with col2:
-        try:
+    try:
         default_model = st.secrets.get("LLM_MODEL", "qwen2.5:3b")
     except Exception:
         default_model = "qwen2.5:3b"
